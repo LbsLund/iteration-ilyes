@@ -10,15 +10,28 @@ namespace Project
     {
         static void Main(string[] args)
         {
-            int myInt = 5;
-            while (myInt >= 1)
+            string name;
+            bool inputIsCorrect = false;
+
+            while (inputIsCorrect == false)
             {
-                Console.WriteLine(myInt);
-                myInt -= 1;
+                Console.Write("Write your name: ");
+                name = Console.ReadLine();
+                Console.WriteLine("Your name is: " + name + ". Press Enter to confirm.");
+                if (Console.ReadKey(true).Key == ConsoleKey.Enter)
+                {
+                    Console.WriteLine("You confirmed" + name + "as your name.");
+                    inputIsCorrect = true;
+                }
+                else
+                {
+                    Console.WriteLine("You did not confirm" + name + " as your name. Try again!");
+                }
+
 
             }
-            Console.WriteLine("När myInt är 0 eller mindre så avbryts loopen. Koden körs alltså tre gånger");
-            Console.ReadKey();
+            Console.ReadKey(true);
         }
+        
     }
 }
