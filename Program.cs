@@ -10,7 +10,15 @@ namespace Project
     {
         static void Main(string[] args)
         {
-            // Add code here!
+            int myInt = 5;
+            while (myInt >= 1)
+            {
+                Console.WriteLine(myInt);
+                myInt -= 1;
+
+            }
+            Console.WriteLine("När myInt är 0 eller mindre så avbryts loopen. Koden körs alltså tre gånger");
+            Console.ReadKey();
         }
     }
 }
