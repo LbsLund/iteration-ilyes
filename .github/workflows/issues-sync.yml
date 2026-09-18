@@ -1,0 +1,242 @@
+name: Issues-Sync
+
+on:
+  push:
+    branches: [main]
+    #paths:
+      #- .github/issue-config.json
+  #schedule:
+   # - cron: "0 * * * *"
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Sync issues from central JSON
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+        run: |
+          set -e
+
+          CONFIG_FILE=".github/config/issue-config.json"
+          SOURCE_URL=$(jq -r '.source' "$CONFIG_FILE")
+
+          echo "Fetching config from: $SOURCE_URL"
+          curl -fsSL "$SOURCE_URL" -o data.json
+
+          # -------------------------
+          # helpers
+          # -------------------------
+          
+          ensure_labels () {
+
+            LABELS="$1"
+
+            [ -z "$LABELS" ] && return
+
+            while read -r LABEL
+            do
+              [ -z "$LABEL" ] && continue
+
+              if ! gh label list --search "$LABEL" --json name \
+                  --jq '.[].name' | grep -Fxq "$LABEL"; then
+
+                echo "Creating label: $LABEL"
+
+                gh label create "$LABEL" --force || true
+              fi
+
+            done <<< "$LABELS"
+          }
+
+          ensure_milestone () {
+            MILESTONE="$1"
+            DUE="$2"
+
+            [ -z "$MILESTONE" ] && return
+
+            NUMBER=$(gh api repos/${{ github.repository }}/milestones \
+              --paginate \
+              --jq ".[] | select(.title==\"$MILESTONE\") | .number")
+
+            if [ -z "$NUMBER" ]; then
+              echo "Creating milestone: $MILESTONE"
+
+              if [ -n "$DUE" ]; then
+                gh api repos/${{ github.repository }}/milestones \
+                  -X POST \
+                  -f title="$MILESTONE" \
+                  -f due_on="${DUE}T23:59:59Z"
+              else
+                gh api repos/${{ github.repository }}/milestones \
+                  -X POST \
+                  -f title="$MILESTONE"
+              fi
+
+            else
+              echo "Updating milestone: $MILESTONE"
+
+              if [ -n "$DUE" ]; then
+                gh api repos/${{ github.repository }}/milestones/$NUMBER \
+                  -X PATCH \
+                  -f due_on="${DUE}T23:59:59Z"
+              fi
+            fi
+          }          
+
+          sync_labels () { 
+            ISSUE="$1" 
+            LABELS_JSON="$2" 
+            REPLACE="$3" 
+
+            [ -z "$ISSUE" ] && return 
+            #ensure_labels "$LABELS" 
+
+            if [ "$REPLACE" = "true" ]; then 
+
+              if [ -n "$LABELS" ]; then
+                JSON=$(echo "$LABELS" | jq -R . | jq -s '{labels: .}')
+              else
+                JSON='{"labels":[]}'
+              fi
+
+              echo "Replacing labels #$LABELS"
+
+              echo "$JSON" | gh api \
+                --method PUT \
+                repos/${{ github.repository }}/issues/$ISSUE/labels \
+                --input -
+                
+            else 
+              echo "Add labels #$LABELS"
+
+              while IFS= read -r LABEL
+              do
+                  [ -z "$LABEL" ] && continue
+
+                  gh issue edit "$ISSUE" \
+                      --add-label "$LABEL"
+
+              done <<< "$LABELS"
+            fi 
+          }
+
+          set_issue_fields () {
+            ISSUE="$1"
+            FIELDS="$2"
+
+            REPO_CREATED=$(gh api repos/${{ github.repository }} --jq '.created_at | split("T")[0]')
+            FIELD_VALUES="[]"
+
+            while IFS='|' read -r FIELD_ID VALUE
+            do
+              [ -z "$FIELD_ID" ] && continue
+
+              case "$VALUE" in
+                REPO_CREATED)
+                  VALUE="$REPO_CREATED"
+                  ;;
+                TODAY)
+                  VALUE=$(date +%F)
+                  ;;
+                COMMITS)
+                  VALUE=$(git rev-list --count HEAD | xargs)
+                  ;;
+              esac
+
+              echo "Value com $VALUE"
+
+              if [[ "$VALUE" =~ ^[0-9]+$ ]]; then
+                FIELD_VALUES=$(echo "$FIELD_VALUES" | jq \
+                  --argjson id "$FIELD_ID" \
+                  --argjson value "$VALUE" \
+                  '. += [{field_id:$id, value:$value}]')
+              else
+                FIELD_VALUES=$(echo "$FIELD_VALUES" | jq \
+                  --argjson id "$FIELD_ID" \
+                  --arg value "$VALUE" \
+                  '. += [{field_id:$id, value:$value}]')
+              fi
+            done <<< "$FIELDS"
+
+            JSON=$(jq -n --argjson f "$FIELD_VALUES" '{issue_field_values:$f}')
+
+            echo "$JSON" | gh api \
+              --method POST \
+              repos/${{ github.repository }}/issues/$ISSUE/issue-field-values \
+              --input -
+          }
+
+          find_issue () {
+            gh issue list \
+              --search "\"$1\" in:title" \
+              --json number \
+              -q '.[0].number'
+          }
+
+          # -------------------------
+          # MAIN
+          # -------------------------
+
+          jq -c '.issues[]' data.json | while read -r ISSUE; do
+
+
+            TITLE=$(echo "$ISSUE" | jq -r '.title // empty')
+            BODY=$(echo "$ISSUE" | jq -r '.body // empty')
+            TYPE=$(echo "$ISSUE" | jq -r '.type // empty')
+            MILESTONE=$(echo "$ISSUE" | jq -r '.milestone.title // empty')
+            DUE=$(echo "$ISSUE" | jq -r '.milestone.due // empty')
+            REPLACE_LABELS=$(echo "$ISSUE" | jq -r '.replace_labels // false')
+            echo "REPLACE_LABELS $REPLACE_LABELS"
+            LABELS=$(echo "$ISSUE" | jq -r '.labels[]?')
+            ACTOR="${{ github.actor }}"
+            ISSUE_NUMBER=$(find_issue "$TITLE")
+            FIELD_ROWS=$(echo "$ISSUE" | jq -r '
+              .fields
+              | to_entries[]
+              | "\(.key)|\(.value)"
+            ')
+
+            ensure_labels "$LABELS"
+            ensure_milestone "$MILESTONE" "$DUE"
+
+            if [ -z "$ISSUE_NUMBER" ]; then
+
+              echo "Creating issue: $TITLE"
+
+              ISSUE_URL=$(gh issue create \
+                --title "$TITLE" \
+                --body "$BODY" \
+                --type "$TYPE" \
+                --assignee "$ACTOR" \
+                --milestone "$MILESTONE")
+
+              ISSUE_NUMBER=$(echo "$ISSUE_URL" | grep -oE '[0-9]+$')
+
+            else
+
+              echo "Updating issue: $TITLE (#$ISSUE_NUMBER)"
+
+              gh issue edit "$ISSUE_NUMBER" \
+                --title "$TITLE" \
+                --body "$BODY" \
+                --type "$TYPE" \
+                --add-assignee "$ACTOR" \
+                --milestone "$MILESTONE" || true
+              
+            fi
+
+            sync_labels "$ISSUE_NUMBER" "$LABELS" "$REPLACE_LABELS"
+            set_issue_fields "$ISSUE_NUMBER" "$FIELD_ROWS"
+
+          done

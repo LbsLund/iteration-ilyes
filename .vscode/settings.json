@@ -1,0 +1,11 @@
+{
+    "files.exclude": {
+        "**/*.code-workspace": true,
+        ".gitignore": true,
+        "bin": true,
+        "obj": true,
+        ".github": true,
+        ".gitattributes": true,
+        ".vscode": true
+    }
+}
